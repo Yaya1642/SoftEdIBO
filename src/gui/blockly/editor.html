@@ -69,6 +69,7 @@
       <block type="se_elapsed"></block>
       <block type="se_touch_count"></block>
       <block type="se_gesture_count"></block>
+      <block type="se_touch_rhythm"></block>
       <block type="se_on_impact"></block>
       <block type="se_on_lifted"></block>
       <block type="se_organs"></block>
@@ -370,6 +371,18 @@
                  + '(tap / press / compressions) are ML gestures and need a trained '
                  + 'touch model for the skin type, else they never fire. Pair it '
                  + 'with a "go to phase" transition to skip after N gestures.' },
+
+              { type: 'se_touch_rhythm',
+                message0: 'same touch rhythm: every %1 ms +/- %2 ms, %3 intervals',
+                args0: [{ type: 'field_number', name: 'TARGET', value: 550, min: 1 },
+                  { type: 'field_number', name: 'TOLERANCE', value: 150, min: 0 },
+                  { type: 'field_number', name: 'INTERVALS', value: 5, min: 1 }],
+                message1: 'ignore gaps shorter than %1 ms',
+                args1: [{ type: 'field_number', name: 'MIN_GAP', value: 250, min: 0 }],
+                output: 'Cond', colour: 20,
+                tooltip: 'True when consecutive touch presses arrive at the same '
+                 + 'cadence. The first press starts the measurement; multiple '
+                 + 'sensors in one press count only once.' },
 
         { type: 'se_on_impact',
           message0: 'Thymio hit at least %1 times, at least %2',
@@ -692,6 +705,9 @@
         case 'se_touch_count': return { touch_count: { min: num(b, 'MIN') } };
         case 'se_gesture_count': return { gesture_count: { kind: b.getFieldValue('KIND'),
                                                            min: num(b, 'MIN') } };
+        case 'se_touch_rhythm': return { touch_rhythm: {
+          target_interval_ms: num(b, 'TARGET'), tolerance_ms: num(b, 'TOLERANCE'),
+          min_gap_ms: num(b, 'MIN_GAP'), intervals: num(b, 'INTERVALS') } };
         case 'se_on_impact':   return { on_impact: { min: num(b, 'MIN'),
                                                      level: num(b, 'LEVEL') } };
         case 'se_on_lifted':   return { on_lifted: { min: num(b, 'MIN') } };
@@ -930,6 +946,12 @@
           b = newStepBlock('se_gesture_count');
           setF(b, 'KIND', (v && v.kind != null) ? v.kind : 'touch');
           setF(b, 'MIN', (v && v.min != null) ? v.min : v); break;
+        case 'touch_rhythm':
+          b = newStepBlock('se_touch_rhythm'); v = v || {};
+          setF(b, 'TARGET', v.target_interval_ms);
+          setF(b, 'TOLERANCE', v.tolerance_ms);
+          setF(b, 'MIN_GAP', v.min_gap_ms);
+          setF(b, 'INTERVALS', v.intervals); break;
         case 'on_impact': {
           b = newStepBlock('se_on_impact');
           var im = (v && v.min != null) ? v.min : v;

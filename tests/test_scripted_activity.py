@@ -238,6 +238,55 @@ def test_touch_count_shortcut_advances_before_time(clock):
     assert activity.unit_state(unit.unit_id) == "phase2"
 
 
+def test_touch_rhythm_transition_uses_one_event_per_press(clock):
+    spec = {"initial": "listening", "states": {
+        "listening": {"do": [], "transitions": [{
+            "to": "complete", "when": {"touch_rhythm": {
+                "target_interval_ms": 100, "tolerance_ms": 5,
+                "min_gap_ms": 50, "intervals": 2,
+            }},
+        }]},
+        "complete": {"do": [], "transitions": []},
+    }}
+    activity = ScriptedActivity("rhythm", "", spec)
+    robot = _FakeRobot([_FakeSkin(controller=_FakeCtrl())])
+    _start(activity, robot)
+    unit = _unit(activity)
+
+    for _ in range(3):
+        activity._on_magnet(unit, {"act": [0, 1]})
+        activity._on_magnet(unit, {"act": []})
+        clock.advance(0.1)
+
+    assert unit.touch_count == 6
+    activity._on_tick()
+    assert activity.unit_state(unit.unit_id) == "complete"
+
+
+def test_touch_rhythm_outlier_resets_streak(clock):
+    spec = {"initial": "s", "states": {
+        "s": {"do": [], "transitions": [{
+            "to": "done", "when": {"touch_rhythm": {
+                "target_interval_ms": 100, "tolerance_ms": 5,
+                "min_gap_ms": 50, "intervals": 2,
+            }},
+        }]},
+        "done": {"do": [], "transitions": []},
+    }}
+    activity = ScriptedActivity("rhythm", "", spec)
+    robot = _FakeRobot([_FakeSkin(controller=_FakeCtrl())])
+    _start(activity, robot)
+    unit = _unit(activity)
+
+    for delay in (0.1, 0.25, 0.1):
+        activity._on_magnet(unit, {"act": [0]})
+        activity._on_magnet(unit, {"act": []})
+        clock.advance(delay)
+
+    activity._on_tick()
+    assert activity.unit_state(unit.unit_id) == "s"
+
+
 def test_advance_phase_skips_timer_and_stops_at_terminal(clock):
     activity, ctrl, skin, robot = _condition_a()
     _start(activity, robot)

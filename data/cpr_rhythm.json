@@ -1,0 +1,46 @@
+{
+  "format": "softedibo.activity",
+  "version": 1,
+  "name": "CPR Rhythm",
+  "description": "Three participants keep a steady compression rhythm until the beat is consistent long enough.",
+  "spec": {
+    "initial": "listening",
+    "states": {
+      "listening": {
+        "do": [
+          {
+            "set_led": {
+              "color": "#f39c12",
+              "pattern": "pulse",
+              "period_ms": 900
+            }
+          }
+        ],
+        "transitions": [
+          {
+            "to": "complete",
+            "when": {
+              "touch_rhythm": {
+                "target_interval_ms": 550,
+                "tolerance_ms": 150,
+                "min_gap_ms": 250,
+                "intervals": 22
+              }
+            }
+          }
+        ]
+      },
+      "complete": {
+        "do": [
+          {
+            "set_led": {
+              "color": "#2ecc71",
+              "pattern": "solid"
+            }
+          }
+        ],
+        "transitions": []
+      }
+    }
+  }
+}

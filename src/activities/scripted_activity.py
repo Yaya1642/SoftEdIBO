@@ -30,6 +30,7 @@ from PySide6.QtCore import QObject, QTimer
 from src.activities import catalog
 from src.activities.base_activity import BaseActivity
 from src.activities.organ_resolver import OrganResolver
+from src.activities.touch_rhythm import TouchRhythmTracker
 from src.hardware.fill_scaling import (
     MIN_PUMP_DUTY,
     POWER_MAX_LEVEL,
@@ -81,6 +82,7 @@ class _Unit:
     touch_seq: int = 0
     touch_seq_by_chamber: dict[int, int] = field(default_factory=dict)
     active_touch: set[int] = field(default_factory=set)
+    rhythm: TouchRhythmTracker = field(default_factory=TouchRhythmTracker)
     # Classified gestures (tap/stroke/...) counted in the current state, by label,
     # plus the live classifier feeding them (kept alive here). Empty/None when the
     # skin has no trained model - raw-touch `gesture_count` still works.
@@ -354,6 +356,7 @@ class ScriptedActivity(BaseActivity):
         unit.impact_levels.clear()
         unit.lifted_count = 0
         unit.gesture_counts.clear()
+        unit.rhythm.reset()
         unit.pending_state = None
         unit.aux.clear()
         body = self._states.get(state, {}).get("do", [])
@@ -405,6 +408,8 @@ class ScriptedActivity(BaseActivity):
             return unit.touch_count >= int(need)
         if name == "gesture_count":
             return self._eval_gesture_count(unit, val)
+        if name == "touch_rhythm":
+            return self._eval_touch_rhythm(unit, val)
         if name == "on_impact":
             if isinstance(val, dict):
                 need = int(val.get("min", 1))
@@ -448,6 +453,17 @@ class ScriptedActivity(BaseActivity):
         if kind == "touch":
             return unit.touch_count >= need
         return unit.gesture_counts.get(kind, 0) >= need
+
+    @staticmethod
+    def _eval_touch_rhythm(unit: _Unit, val: Any) -> bool:
+        """Evaluate cadence parameters against the unit's touch tracker."""
+        params = val if isinstance(val, dict) else {}
+        return unit.rhythm.matches(
+            target_interval_ms=float(params.get("target_interval_ms", 550)),
+            tolerance_ms=float(params.get("tolerance_ms", 150)),
+            min_gap_ms=float(params.get("min_gap_ms", 250)),
+            required_intervals=int(params.get("intervals", 1)),
+        )
 
     @staticmethod
     def _unit_kind(unit: _Unit) -> str:
@@ -1053,6 +1069,8 @@ class ScriptedActivity(BaseActivity):
         new_set = {int(s) for s in active
                    if str(s).lstrip("-").isdigit()}
         mapping = self._touch_mapping(unit.skin)
+        if new_set and not unit.active_touch:
+            unit.rhythm.record(time.monotonic() * 1000.0)
         for sensor_idx in new_set - unit.active_touch:      # newly pressed
             self._on_press(unit, mapping, sensor_idx)
         unit.active_touch = new_set

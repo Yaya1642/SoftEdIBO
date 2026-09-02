@@ -327,6 +327,19 @@ CONDITIONS: tuple[Verb, ...] = (
                               "needing a trained model for this skin type."),
         VerbField("min", "int", 3),
     )),
+    Verb("touch_rhythm", "condition",
+         "True after consecutive touches arrive at roughly the same interval. "
+         "The first touch starts the measurement; each later touch contributes "
+         "one interval, and an out-of-range interval resets the streak.", (
+        VerbField("target_interval_ms", "ms", 550,
+                  description="Expected time between touch presses."),
+        VerbField("tolerance_ms", "ms", 150,
+                  description="Allowed drift around the target interval."),
+        VerbField("min_gap_ms", "ms", 250,
+                  description="Ignore faster changes as duplicate sensor edges."),
+        VerbField("intervals", "int", 5,
+                  description="Consecutive matching intervals required."),
+    )),
     Verb("on_impact", "condition",
          "True once the Thymio was knocked ('impact': a sharp accelerometer "
          "deviation from rest) at least 'min' times in this state, at intensity "
