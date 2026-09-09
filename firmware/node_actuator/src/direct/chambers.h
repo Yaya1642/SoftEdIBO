@@ -6,6 +6,7 @@
 #include "dbg.h"
 #include "coupled_fill.h"   // shared coupled-line fill supervisor (both boards)
 #include "hold_duty.h"      // shared leak-compensating continuous hold (both boards)
+#include "pump_duty.h"      // shared PWM floor + below-floor deflate duty (both boards)
 
 // Per-chamber state + valve/pump coordination for node_direct.
 //
@@ -31,8 +32,12 @@ constexpr float HARD_MAX_KPA    =  100.0f;
 // (pressure.h): -100 (inert) with the blind 0..100 gauge, -40 with the -40..40
 // vacuum sensor so the FA0520E always re-opens. Bounds set_min + the manual cutoff.
 constexpr float HARD_MIN_KPA    = pressure::VACUUM_HOLD_FLOOR_KPA;
-constexpr uint8_t  DEFAULT_INFLATE_DUTY = 255;
-constexpr uint8_t  DEFAULT_DEFLATE_DUTY = 255;
+constexpr uint8_t  DEFAULT_INFLATE_DUTY = pump_duty::FULL;
+// Full while any open deflate chamber is still visible to its gauge; once every
+// open deflate valve has bottomed out at the gauge floor (target below it, the
+// rest of the pull is time-only) recalcPumps drops the vacuum pump to
+// pump_duty::DEFLATE_BELOW_FLOOR (= the shared 180 floor) - see deflateLineAtFloor.
+constexpr uint8_t  DEFAULT_DEFLATE_DUTY = pump_duty::FULL;
 
 constexpr int PUMP_PWM_FREQ = 20000;
 constexpr int PUMP_PWM_RES  =     8;
@@ -124,18 +129,28 @@ inline void setValve(int ch, int side, bool open) {
 inline uint16_t holdValveMask = 0;
 inline uint8_t  holdPumpDuty  = 0;
 
+// Chambers under a bench VENT (both valves open, no pump): their open valves
+// do not count as a flow path for recalcPumps, so a vented chamber never has a
+// pump run into it. Set/cleared by setManualVent (manual override rules).
+inline uint16_t ventMask = 0;
+
 // Drive the shared pumps PURELY from the ACTUAL open valves, never from chamber
 // state: each pump runs as long as ANY valve of its direction is open, and stops
 // only once they are all closed. So a pump can never dead-head (no open valve of
 // its direction => it is off - that is the "running dry" guard) and across the
 // engine's round hand-offs it never drops out from under an open valve. Direct
 // has one pump per direction. Full duty, except when the ONLY open inflate
-// valves belong to the hold engine - then its equilibrium duty applies.
+// valves belong to the hold engine - then its equilibrium duty applies - and
+// except when EVERY open deflate valve is past the gauge floor - then the
+// vacuum pump runs at the reduced below-floor duty.
+inline bool deflateLineAtFloor();   // defined after the engines (needs deflateEng)
+
 inline void recalcPumps() {
     bool anyInflateOpen = false;
     bool anyDeflateOpen = false;
     bool nonHoldInflate = false;
     for (int i = 0; i < NUM_CHAMBERS; i++) {
+        if (ventMask & (1u << i)) continue;   // vented: open to atmosphere, no pump
         if (valveOpen[i * 2 + 0]) {
             anyInflateOpen = true;
             if (!(holdValveMask & (1u << i))) nonHoldInflate = true;
@@ -145,7 +160,9 @@ inline void recalcPumps() {
     uint8_t inflateDuty = !anyInflateOpen ? 0
                         : nonHoldInflate  ? DEFAULT_INFLATE_DUTY
                                           : holdPumpDuty;
-    uint8_t deflateDuty = anyDeflateOpen ? DEFAULT_DEFLATE_DUTY : 0;
+    uint8_t deflateDuty = !anyDeflateOpen      ? 0
+                        : deflateLineAtFloor() ? pump_duty::DEFLATE_BELOW_FLOOR
+                                               : DEFAULT_DEFLATE_DUTY;
     static uint8_t lastInflateDuty = 0xFF;
     static uint8_t lastDeflateDuty = 0xFF;
     if (inflateDuty != lastInflateDuty || deflateDuty != lastDeflateDuty) {
@@ -237,6 +254,22 @@ inline void enginesInit() {
     deflateEng.begin(1, TUNE_DEFLATE);
 }
 
+// The lowest ambient-zeroed reading chamber n's gauge can produce: the sensor
+// clamps at P_MIN (0 on the blind 0..100 kPa part) and the tare then shifts it
+// by the chamber's zero, so the visible floor sits a few kPa BELOW 0.
+inline float gaugeFloorKpa(int n) { return pressure::P_MIN - zeroKpa[n]; }
+
+// Every open (non-vented) deflate valve is a chamber the deflate engine has
+// flagged at its gauge floor - the vacuum line is entirely past what the
+// sensors can see. A manual/bench deflate valve is never at-floor, so it keeps
+// the pump at full duty.
+inline bool deflateLineAtFloor() {
+    uint16_t open = 0;
+    for (int i = 0; i < NUM_CHAMBERS; i++)
+        if (valveOpen[i * 2 + 1] && !(ventMask & (1u << i))) open |= (uint16_t)(1u << i);
+    return deflateEng.lineAtFloor(open);
+}
+
 // Engine actuation primitive: open chamber i's valve for `dir` (closing the
 // opposite side first). The engine recalcs pumps after a whole round opens.
 inline void engOpen(int i, uint8_t dir) {
@@ -280,7 +313,8 @@ inline void requestDeflate(int n, float target, uint8_t duty, uint32_t cap_ms = 
     if (reversed) recalcPumps();
     state[n].duty       = duty;
     state[n].target_kpa = target;
-    deflateEng.request(n, target, state[n].max_kpa - state[n].min_kpa, cap_ms, blind);
+    deflateEng.request(n, target, state[n].max_kpa - state[n].min_kpa, cap_ms, blind,
+                       gaugeFloorKpa(n));
 }
 
 // Stop & hold a chamber wherever it is (drops it from both engines and from
@@ -377,8 +411,10 @@ inline void setManualPump(int idx, bool on) {
 
 inline void setManualValve(int ch, int side, bool open) {
     if (ch < 0 || ch >= NUM_CHAMBERS || side < 0 || side > 1) return;
-    // Single side open per chamber: opening one side closes the other.
+    // Single side open per chamber: opening one side closes the other (and
+    // ends a vent, which is the one state with both sides open).
     if (open) {
+        ventMask &= ~(uint16_t)(1u << ch);
         int other = ch * 2 + (1 - side);
         if (manualValveOn[other]) {
             manualValveOn[other] = false;
@@ -390,6 +426,24 @@ inline void setManualValve(int ch, int side, bool open) {
     manualValveOn[i] = open;
     manualValveTs[i] = open ? millis() : 0;
     setValve(ch, side, open);
+}
+
+// Bench vent of one chamber: BOTH its valves open under the manual override
+// (dead-man + keepalive like any manual valve) and excluded from the pump
+// recalc, so the chamber equalises to atmosphere through the off pumps' paths
+// without a pump running into it. Neutralises an inflated OR vacuumed chamber
+// in one go. Closing restores the normal single-side manual rule.
+inline void setManualVent(int ch, bool open) {
+    if (ch < 0 || ch >= NUM_CHAMBERS) return;
+    uint16_t bit = (uint16_t)(1u << ch);
+    if (open) ventMask |= bit; else ventMask &= ~bit;
+    for (int side = 0; side < 2; side++) {
+        int i = ch * 2 + side;
+        manualValveOn[i] = open;
+        manualValveTs[i] = open ? millis() : 0;
+        setValve(ch, side, open);
+    }
+    recalcPumps();   // pumps must not chase the vented valves (or dead-head)
 }
 
 inline void manualSafetyTick(uint32_t now) {
@@ -404,7 +458,8 @@ inline void manualSafetyTick(uint32_t now) {
     bool deadmanClosed = false;
     for (int i = 0; i < NUM_CHAMBERS * 2; i++)
         if (manualValveOn[i] && (int32_t)(now - manualValveTs[i]) >= (int32_t)MANUAL_MAX_ON_MS) {
-            setManualValve(i / 2, i % 2, false);
+            if (ventMask & (1u << (i / 2))) setManualVent(i / 2, false);
+            else setManualValve(i / 2, i % 2, false);
             deadmanClosed = true;
         }
     // A manual-open valve counts into recalcPumps(), so an engine round can leave
@@ -483,6 +538,7 @@ inline void testRun(int dir, int chamber = -1, uint8_t duty = 0) {
     uint8_t runDuty = duty ? duty : DEFAULT_INFLATE_DUTY;
     for (int i = 0; i < 2; i++)                 { manualPumpOn[i] = false; manualPumpTs[i] = 0; }
     for (int i = 0; i < NUM_CHAMBERS * 2; i++)  { manualValveOn[i] = false; manualValveTs[i] = 0; }
+    ventMask = 0;
     ledcWrite(PUMP1_LEDC_CH, dir == 0 ? runDuty : 0);
     ledcWrite(PUMP2_LEDC_CH, dir == 1 ? runDuty : 0);
     for (int n = 0; n < NUM_CHAMBERS; n++) {
@@ -507,11 +563,12 @@ inline void emergencyStopAll() {
     // Pumps off.
     ledcWrite(PUMP1_LEDC_CH, 0);
     ledcWrite(PUMP2_LEDC_CH, 0);
-    // All valves closed + clear any manual override.
+    // All valves closed + clear any manual override (vent included).
     for (int i = 0; i < NUM_CHAMBERS * 2; i++) {
         manualValveOn[i] = false;
         manualValveTs[i] = 0;
     }
+    ventMask = 0;
     manualPumpOn[0] = manualPumpOn[1] = false;
     manualPumpTs[0] = manualPumpTs[1] = 0;
     for (int n = 0; n < NUM_CHAMBERS; n++) stop(n);   // closes both valves, resets state
