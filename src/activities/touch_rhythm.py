@@ -37,3 +37,61 @@ class TouchRhythmTracker:
                 break
             matching += 1
         return matching >= max(1, int(required_intervals))
+
+    def latest_interval_ms(self, min_gap_ms: float = 0.0) -> float | None:
+        """Return the latest non-duplicate interval, if one is available."""
+        for interval_ms in reversed(self.intervals_ms):
+            if interval_ms >= min_gap_ms:
+                return interval_ms
+        return None
+
+    def latest_frequency_hz(self, min_gap_ms: float = 0.0) -> float | None:
+        """Return the latest usable cadence as presses per second."""
+        interval_ms = self.latest_interval_ms(min_gap_ms)
+        return None if interval_ms is None or interval_ms <= 0 else 1000.0 / interval_ms
+
+    def has_matching_intervals(self, min_gap_ms: float,
+                               required_intervals: int) -> bool:
+        """Return whether this stream has enough usable intervals."""
+        usable = sum(interval >= min_gap_ms for interval in self.intervals_ms)
+        return usable >= max(1, int(required_intervals))
+
+
+@dataclass
+class MagnitudeCompressionTracker:
+    """Turn a continuous magnitude stream into compression onsets.
+
+    A rising crossing of ``enter`` records one beat. A held signal normally stays
+    active until it falls below ``exit``; a later sharp rise can also record a
+    beat, which handles sensors whose magnetic baseline does not fully recover
+    between compressions.
+    """
+
+    enter: float
+    exit: float
+    active: bool = False
+    previous: float | None = None
+    spike_delta: float = 0.0
+
+    def reset(self) -> None:
+        self.active = False
+        self.previous = None
+
+    def update(self, magnitude: float) -> bool:
+        magnitude = max(0.0, float(magnitude))
+        previous = self.previous
+        self.previous = magnitude
+        spike_delta = self.spike_delta or max(20.0, self.enter * 0.25)
+        if self.active:
+            if magnitude <= self.exit:
+                self.active = False
+                return False
+            # Count a distinct fast rise even when the signal remains above the
+            # release threshold after the previous compression.
+            return (previous is not None
+                    and magnitude >= self.enter
+                    and magnitude - previous >= spike_delta)
+        if magnitude >= self.enter:
+            self.active = True
+            return True
+        return False

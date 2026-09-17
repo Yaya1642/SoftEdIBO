@@ -52,7 +52,9 @@ class SkinWidget(QGroupBox):
         # status panel (numbered dots + LED light) when the skin has organs.
         top = QHBoxLayout()
         top.setSpacing(6)
-        if skin.chamber_grid:
+        touch_ctrl = getattr(skin, "touch_controller", None)
+        has_touch_stream = callable(getattr(touch_ctrl, "on_magnet", None))
+        if skin.chamber_grid or (skin.touch or {}).get("node_mac") or has_touch_stream:
             self._grid_view = SkinGridView(skin)
             top.addWidget(self._grid_view, alignment=Qt.AlignmentFlag.AlignCenter)
             # Mirror real-hardware touch events as yellow pulses on the grid.

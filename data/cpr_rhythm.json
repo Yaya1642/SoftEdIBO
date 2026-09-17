@@ -20,11 +20,12 @@
           {
             "to": "complete",
             "when": {
-              "touch_rhythm": {
-                "target_interval_ms": 550,
-                "tolerance_ms": 150,
-                "min_gap_ms": 250,
-                "intervals": 22
+              "group_touch_rhythm": {
+                "participants": 3,
+                "tolerance_hz": 0.2,
+                "sync_tolerance_ms": 150,
+                "min_gap_ms": 20,
+                "intervals": 5
               }
             }
           }

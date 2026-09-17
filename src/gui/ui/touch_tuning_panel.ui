@@ -157,6 +157,50 @@ tau is the drift time constant in ms (larger = slower tracking).</string></prope
      </item>
     </layout>
    </item>
+     <item row="4" column="0">
+      <widget class="QLabel" name="spike_label">
+          <property name="text"><string>Spike delta:</string></property>
+      </widget>
+     </item>
+     <item row="4" column="1">
+      <widget class="QDoubleSpinBox" name="spike_spin">
+          <property name="toolTip"><string>Minimum magnitude rise in uT required for a new CPR beat while a sensor remains active.</string></property>
+          <property name="decimals"><number>0</number></property>
+          <property name="maximum"><double>2000.000000000000000</double></property>
+          <property name="singleStep"><double>10.000000000000000</double></property>
+          <property name="suffix"><string> uT</string></property>
+      </widget>
+     </item>
+     <item row="5" column="0">
+      <widget class="QLabel" name="frequency_reset_label">
+          <property name="text"><string>Frequency reset:</string></property>
+      </widget>
+     </item>
+     <item row="5" column="1">
+      <widget class="QDoubleSpinBox" name="frequency_reset_spin">
+          <property name="toolTip"><string>Time without a new press before the displayed frequency resets.</string></property>
+          <property name="decimals"><number>0</number></property>
+          <property name="minimum"><double>100.000000000000000</double></property>
+          <property name="maximum"><double>60000.000000000000000</double></property>
+          <property name="singleStep"><double>1000.000000000000000</double></property>
+          <property name="suffix"><string> ms</string></property>
+      </widget>
+     </item>
+    <item row="6" column="0">
+     <widget class="QLabel" name="sync_tolerance_label">
+        <property name="text"><string>Synchrony tolerance:</string></property>
+     </widget>
+    </item>
+    <item row="6" column="1">
+     <widget class="QDoubleSpinBox" name="sync_tolerance_spin">
+        <property name="toolTip"><string>Maximum time difference between the latest presses of the participating quadrants.</string></property>
+        <property name="decimals"><number>0</number></property>
+        <property name="minimum"><double>0.000000000000000</double></property>
+        <property name="maximum"><double>2000.000000000000000</double></property>
+        <property name="singleStep"><double>10.000000000000000</double></property>
+        <property name="suffix"><string> ms</string></property>
+     </widget>
+    </item>
   </layout>
  </widget>
  <resources/>

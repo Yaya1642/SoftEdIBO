@@ -30,7 +30,8 @@ from PySide6.QtCore import QObject, QTimer
 from src.activities import catalog
 from src.activities.base_activity import BaseActivity
 from src.activities.organ_resolver import OrganResolver
-from src.activities.touch_rhythm import TouchRhythmTracker
+from src.activities.touch_rhythm import (MagnitudeCompressionTracker,
+                                         TouchRhythmTracker)
 from src.hardware.fill_scaling import (
     MIN_PUMP_DUTY,
     POWER_MAX_LEVEL,
@@ -83,6 +84,9 @@ class _Unit:
     touch_seq_by_chamber: dict[int, int] = field(default_factory=dict)
     active_touch: set[int] = field(default_factory=set)
     rhythm: TouchRhythmTracker = field(default_factory=TouchRhythmTracker)
+    rhythm_by_sensor: dict[int, TouchRhythmTracker] = field(default_factory=dict)
+    rhythm_last_press_ms: dict[int, float] = field(default_factory=dict)
+    magnitude_by_sensor: dict[int, MagnitudeCompressionTracker] = field(default_factory=dict)
     # Classified gestures (tap/stroke/...) counted in the current state, by label,
     # plus the live classifier feeding them (kept alive here). Empty/None when the
     # skin has no trained model - raw-touch `gesture_count` still works.
@@ -357,6 +361,10 @@ class ScriptedActivity(BaseActivity):
         unit.lifted_count = 0
         unit.gesture_counts.clear()
         unit.rhythm.reset()
+        for tracker in unit.rhythm_by_sensor.values():
+            tracker.reset()
+        for tracker in unit.magnitude_by_sensor.values():
+            tracker.reset()
         unit.pending_state = None
         unit.aux.clear()
         body = self._states.get(state, {}).get("do", [])
@@ -410,6 +418,8 @@ class ScriptedActivity(BaseActivity):
             return self._eval_gesture_count(unit, val)
         if name == "touch_rhythm":
             return self._eval_touch_rhythm(unit, val)
+        if name == "group_touch_rhythm":
+            return self._eval_group_touch_rhythm(unit, val)
         if name == "on_impact":
             if isinstance(val, dict):
                 need = int(val.get("min", 1))
@@ -464,6 +474,42 @@ class ScriptedActivity(BaseActivity):
             min_gap_ms=float(params.get("min_gap_ms", 250)),
             required_intervals=int(params.get("intervals", 1)),
         )
+
+    @staticmethod
+    def _eval_group_touch_rhythm(unit: _Unit, val: Any) -> bool:
+        """Check that several sensor streams have converged on one frequency."""
+        params = val if isinstance(val, dict) else {}
+        participants = max(1, int(params.get("participants", 3)))
+        tolerance_hz = params.get("tolerance_hz")
+        min_gap_ms = max(0.0, float(params.get("min_gap_ms", 20)))
+        required = max(1, int(params.get("intervals", 5)))
+        candidates = []
+        for sensor_idx, tracker in unit.rhythm_by_sensor.items():
+            if not tracker.has_matching_intervals(min_gap_ms, required):
+                continue
+            latest = tracker.latest_frequency_hz(min_gap_ms)
+            press_ms = unit.rhythm_last_press_ms.get(sensor_idx)
+            if latest is not None and press_ms is not None:
+                candidates.append((sensor_idx, latest, press_ms))
+        if len(candidates) < participants:
+            return False
+        candidates.sort(key=lambda candidate: candidate[1])
+        selected = candidates[:participants]
+        median = selected[len(selected) // 2][1]
+        if tolerance_hz is None:
+            # Keep old saved activities working after the condition became Hz-based.
+            tolerance_hz = median * max(0.0, float(
+                params.get("tolerance_pct", 20))) / 100.0
+        allowed = max(0.0, float(tolerance_hz))
+        if median <= 0 or not all(abs(interval - median) <= allowed
+                                  for _, interval, _ in selected):
+            return False
+        touch = getattr(unit.skin, "touch", None) or {}
+        sync_tolerance_ms = touch.get("rhythm_sync_tolerance_ms",
+                                      params.get("sync_tolerance_ms", 150))
+        sync_tolerance_ms = max(0.0, float(sync_tolerance_ms))
+        press_times = [press_ms for _, _, press_ms in selected]
+        return max(press_times) - min(press_times) <= sync_tolerance_ms
 
     @staticmethod
     def _unit_kind(unit: _Unit) -> str:
@@ -1069,11 +1115,56 @@ class ScriptedActivity(BaseActivity):
         new_set = {int(s) for s in active
                    if str(s).lstrip("-").isdigit()}
         mapping = self._touch_mapping(unit.skin)
-        if new_set and not unit.active_touch:
-            unit.rhythm.record(time.monotonic() * 1000.0)
+        now_ms = time.monotonic() * 1000.0
+        magnitudes = data.get("mag")
+        if isinstance(magnitudes, (list, tuple)):
+            enter, exit, spike_delta = self._magnitude_thresholds(unit.skin)
+            for sensor_idx, raw in enumerate(magnitudes):
+                try:
+                    magnitude = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                tracker = unit.magnitude_by_sensor.setdefault(
+                    sensor_idx, MagnitudeCompressionTracker(
+                        enter, exit, spike_delta=spike_delta))
+                tracker.enter = enter
+                tracker.exit = exit
+                tracker.spike_delta = spike_delta
+                if tracker.update(magnitude):
+                    unit.rhythm_by_sensor.setdefault(
+                        sensor_idx, TouchRhythmTracker()).record(now_ms)
+                    unit.rhythm_last_press_ms[sensor_idx] = now_ms
+                    unit.rhythm.record(now_ms)
+        elif new_set and not unit.active_touch:
+            # Backward-compatible fallback for old/binary sensor messages.
+            unit.rhythm.record(now_ms)
         for sensor_idx in new_set - unit.active_touch:      # newly pressed
+            if not isinstance(magnitudes, (list, tuple)):
+                tracker = unit.rhythm_by_sensor.setdefault(
+                    sensor_idx, TouchRhythmTracker())
+                tracker.record(now_ms)
+                unit.rhythm_last_press_ms[sensor_idx] = now_ms
             self._on_press(unit, mapping, sensor_idx)
         unit.active_touch = new_set
+
+    @staticmethod
+    def _magnitude_thresholds(skin: Any) -> tuple[float, float, float]:
+        """Read compression hysteresis thresholds from the skin touch config."""
+        touch = getattr(skin, "touch", None) or {}
+        enter = touch.get("rhythm_enter_ut")
+        if enter is None:
+            enter = touch.get("act_threshold_ut")
+        if enter is None:
+            thresholds = touch.get("quadrant_thresholds") or []
+            enter = (sum(float(v) for v in thresholds) / len(thresholds)
+                     if thresholds else 100.0)
+        enter = max(0.0, float(enter))
+        exit = touch.get("rhythm_exit_ut")
+        exit = enter * 0.5 if exit is None else max(0.0, float(exit))
+        spike_delta = touch.get("rhythm_spike_ut")
+        if spike_delta is None:
+            spike_delta = max(20.0, enter * 0.25)
+        return enter, min(exit, enter), max(0.0, float(spike_delta))
 
     def _on_press(self, unit: _Unit, mapping: dict, sensor_idx: int) -> None:
         unit.touch_count += 1

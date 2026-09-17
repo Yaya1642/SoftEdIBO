@@ -287,6 +287,92 @@ def test_touch_rhythm_outlier_resets_streak(clock):
     assert activity.unit_state(unit.unit_id) == "s"
 
 
+def test_group_touch_rhythm_matches_three_independent_sensors(clock):
+    spec = {"initial": "s", "states": {
+        "s": {"do": [], "transitions": [{
+            "to": "done", "when": {"group_touch_rhythm": {
+                "participants": 3, "tolerance_hz": 1,
+                "min_gap_ms": 50, "intervals": 2,
+            }},
+        }]},
+        "done": {"do": [], "transitions": []},
+    }}
+    activity = ScriptedActivity("group rhythm", "", spec)
+    robot = _FakeRobot([_FakeSkin(controller=_FakeCtrl())])
+    _start(activity, robot)
+    unit = _unit(activity)
+
+    for _ in range(3):
+        for sensor in (0, 1, 2):
+            activity._on_magnet(unit, {"act": [sensor]})
+            activity._on_magnet(unit, {"act": []})
+        clock.advance(0.1)
+
+    activity._on_tick()
+    assert activity.unit_state(unit.unit_id) == "done"
+
+
+def test_magnitude_rhythm_counts_force_crossings_without_release(clock):
+    spec = {"initial": "s", "states": {
+        "s": {"do": [], "transitions": [{
+            "to": "done", "when": {"touch_rhythm": {
+                "target_interval_ms": 100, "tolerance_ms": 5,
+                "min_gap_ms": 50, "intervals": 2,
+            }},
+        }]},
+        "done": {"do": [], "transitions": []},
+    }}
+    activity = ScriptedActivity("force rhythm", "", spec)
+    skin = _FakeSkin(controller=_FakeCtrl())
+    skin.touch = {"rhythm_enter_ut": 70, "rhythm_exit_ut": 40}
+    robot = _FakeRobot([skin])
+    _start(activity, robot)
+    unit = _unit(activity)
+
+    for magnitude in (30, 70, 30):
+        activity._on_magnet(unit, {"act": [], "mag": [magnitude]})
+    clock.advance(0.1)
+    for magnitude in (70, 30, 70):
+        activity._on_magnet(unit, {"act": [], "mag": [magnitude]})
+    clock.advance(0.1)
+    for magnitude in (30, 70, 30):
+        activity._on_magnet(unit, {"act": [], "mag": [magnitude]})
+
+    activity._on_tick()
+    assert activity.unit_state(unit.unit_id) == "done"
+
+
+def test_group_touch_rhythm_rejects_different_sensor_cadence(clock):
+    spec = {"initial": "s", "states": {
+        "s": {"do": [], "transitions": [{
+            "to": "done", "when": {"group_touch_rhythm": {
+                "participants": 3, "tolerance_hz": 1,
+                "min_gap_ms": 50, "intervals": 2,
+            }},
+        }]},
+        "done": {"do": [], "transitions": []},
+    }}
+    activity = ScriptedActivity("group rhythm", "", spec)
+    robot = _FakeRobot([_FakeSkin(controller=_FakeCtrl())])
+    _start(activity, robot)
+    unit = _unit(activity)
+
+    for sensor in (0, 1, 2):
+        activity._on_magnet(unit, {"act": [sensor]})
+        activity._on_magnet(unit, {"act": []})
+    for _ in range(1, 7):
+        clock.advance(0.1)
+        for sensor in (0, 1):
+            activity._on_magnet(unit, {"act": [sensor]})
+            activity._on_magnet(unit, {"act": []})
+        if _ in (3, 6):
+            activity._on_magnet(unit, {"act": [2]})
+            activity._on_magnet(unit, {"act": []})
+
+    activity._on_tick()
+    assert activity.unit_state(unit.unit_id) == "s"
+
+
 def test_advance_phase_skips_timer_and_stops_at_terminal(clock):
     activity, ctrl, skin, robot = _condition_a()
     _start(activity, robot)

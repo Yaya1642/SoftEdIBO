@@ -128,6 +128,66 @@ class Settings:
         by_type[skin_type] = float(value)
         self.save()
 
+    def touch_quadrant_thresholds(self, key: str) -> list[float] | None:
+        """Saved per-quadrant touch thresholds for a node or skin key."""
+        values = self._data.get("touch", {}).get("quadrant_thresholds", {})
+        values = values.get(key) if isinstance(values, dict) else None
+        if not isinstance(values, list) or not values:
+            return None
+        try:
+            return [float(value) for value in values]
+        except (TypeError, ValueError):
+            return None
+
+    def set_touch_quadrant_thresholds(self, key: str,
+                                      values: list[float]) -> None:
+        """Persist per-quadrant touch thresholds and save immediately."""
+        if not key:
+            return
+        touch = self._data.setdefault("touch", {})
+        by_key = touch.setdefault("quadrant_thresholds", {})
+        by_key[key] = [float(value) for value in values]
+        self.save()
+
+    def touch_spike_threshold(self, key: str) -> float | None:
+        values = self._data.get("touch", {}).get("spike_threshold_ut", {})
+        value = values.get(key) if isinstance(values, dict) else None
+        return float(value) if isinstance(value, (int, float)) else None
+
+    def set_touch_spike_threshold(self, key: str, value: float) -> None:
+        if not key:
+            return
+        touch = self._data.setdefault("touch", {})
+        by_key = touch.setdefault("spike_threshold_ut", {})
+        by_key[key] = float(value)
+        self.save()
+
+    def touch_frequency_reset_ms(self, key: str) -> float | None:
+        values = self._data.get("touch", {}).get("frequency_reset_ms", {})
+        value = values.get(key) if isinstance(values, dict) else None
+        return float(value) if isinstance(value, (int, float)) else None
+
+    def set_touch_frequency_reset_ms(self, key: str, value: float) -> None:
+        if not key:
+            return
+        touch = self._data.setdefault("touch", {})
+        by_key = touch.setdefault("frequency_reset_ms", {})
+        by_key[key] = float(value)
+        self.save()
+
+    def touch_sync_tolerance_ms(self, key: str) -> float | None:
+        values = self._data.get("touch", {}).get("sync_tolerance_ms", {})
+        value = values.get(key) if isinstance(values, dict) else None
+        return float(value) if isinstance(value, (int, float)) else None
+
+    def set_touch_sync_tolerance_ms(self, key: str, value: float) -> None:
+        if not key:
+            return
+        touch = self._data.setdefault("touch", {})
+        by_key = touch.setdefault("sync_tolerance_ms", {})
+        by_key[key] = float(value)
+        self.save()
+
     @property
     def gateway_port(self) -> str:
         """Serial port for the SoftEdIBO gateway."""

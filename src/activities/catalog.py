@@ -340,6 +340,18 @@ CONDITIONS: tuple[Verb, ...] = (
         VerbField("intervals", "int", 5,
                   description="Consecutive matching intervals required."),
     )),
+    Verb("group_touch_rhythm", "condition",
+         "True when several separate touch sensors have steady frequencies whose "
+         "latest values are close to the shared frequency.", (
+        VerbField("participants", "int", 3,
+                  description="Separate sensor streams that must agree."),
+        VerbField("tolerance_hz", "float", 5,
+                  description="Allowed difference from the shared frequency."),
+        VerbField("min_gap_ms", "ms", 20,
+                  description="Ignore faster changes as duplicate edges."),
+        VerbField("intervals", "int", 5,
+                  description="Steady intervals required from each stream."),
+    )),
     Verb("on_impact", "condition",
          "True once the Thymio was knocked ('impact': a sharp accelerometer "
          "deviation from rest) at least 'min' times in this state, at intensity "

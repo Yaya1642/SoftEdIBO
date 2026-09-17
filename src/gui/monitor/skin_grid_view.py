@@ -20,6 +20,7 @@ to give the user a visual map of where each chamber sits and how full it is.
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from typing import Any
 
@@ -42,6 +43,8 @@ _CHAMBER_PULSE = QColor("#3498db")  # touched chamber highlight (blue)
 # zero over this window so brief contacts still flash visibly.
 _TOUCH_FADE_MS    = 400
 _TOUCH_TICK_MS    = 40        # repaint cadence while a pulse is alive
+_FREQUENCY_STALE_MS = 10000   # default hide cadence after 10 s without a press
+_SIM_PRESS_MAG_UT = 120.0     # above the default 100 uT rhythm threshold
 
 # 4-connectivity offsets used when grouping cells into regions.
 _NEIGHBOURS = ((-1, 0), (1, 0), (0, -1), (0, 1))
@@ -83,6 +86,9 @@ class SkinGridView(QWidget):
         self._active_sensors:  dict[int, int] = {}
         self._active_chambers: dict[int, int] = {}
         self._held_sensors:    set[int] = set()
+        self._display_active:  set[int] = set()
+        self._last_sensor_press_ms: dict[int, float] = {}
+        self._sensor_frequency_hz: dict[int, float] = {}
         self._tick = QTimer(self)
         self._tick.setInterval(_TOUCH_TICK_MS)
         self._tick.timeout.connect(self._decay_pulses)
@@ -234,7 +240,7 @@ class SkinGridView(QWidget):
 
     # Small fixed-size simulate button - bigger sensor regions previously
     # made the T-button huge enough to swallow the skin.
-    _SENSOR_BTN_SIZE = 24
+    _SENSOR_BTN_SIZE = 38
 
     def _build_sensor_buttons(self) -> None:
         """Create one small 'T' button per sensor. Positions are set in
@@ -242,12 +248,14 @@ class SkinGridView(QWidget):
         they pick up the widget's real pixel size."""
         side = self._SENSOR_BTN_SIZE
         for sensor_idx in self._sensor_cells:
-            btn = QPushButton(f"T{sensor_idx}", self)
+            if sensor_idx in self._sensor_buttons:
+                continue
+            btn = QPushButton(f"T{sensor_idx}\n-- Hz", self)
             btn.setFixedSize(side, side)
             btn.setStyleSheet(
                 "QPushButton { background: rgba(241, 196, 15, 220);"
                 " border: 1px solid #b7950b; border-radius: 4px;"
-                " font-size: 9px; font-weight: bold; color: #1c2833; }"
+                " font-size: 8px; font-weight: bold; color: #1c2833; }"
                 "QPushButton:pressed { background: rgba(241, 196, 15, 255); }"
             )
             btn.setToolTip(
@@ -259,6 +267,29 @@ class SkinGridView(QWidget):
             btn.show()
             self._sensor_buttons[sensor_idx] = btn
         self._reposition_sensor_buttons()
+
+    def _ensure_sensor_buttons_for_stream(self, count: int) -> None:
+        """Create frequency overlays from the first live magnet frame."""
+        count = max(0, int(count))
+        if count <= 0 or len(self._sensor_buttons) >= count:
+            return
+        if not self._sensor_cells:
+            geo = getattr(self._skin, "geometry", None)
+            if geo is not None and geo.sensor_count >= count:
+                self._sensor_cols, self._sensor_rows, self._sensor_grid = \
+                    geo.natural_sensor_grid()
+            else:
+                self._sensor_cols = 2 if count == 4 else count
+                self._sensor_rows = (count + self._sensor_cols - 1) // self._sensor_cols
+                self._sensor_grid = [
+                    [row * self._sensor_cols + col
+                     if row * self._sensor_cols + col < count else -1
+                     for col in range(self._sensor_cols)]
+                    for row in range(self._sensor_rows)
+                ]
+            self._sensor_cells = self._cells_by_value(
+                self._sensor_grid, self._sensor_rows, self._sensor_cols)
+        self._build_sensor_buttons()
 
     def _reposition_sensor_buttons(self) -> None:
         """Re-centre each T button on its sensor region using the widget's
@@ -328,8 +359,8 @@ class SkinGridView(QWidget):
         board is plugged in. Falls back to the local visual handler if there is
         no touch controller (visual-only skin)."""
         # Shape the simulated message like a real ``magnet`` one so it can be
-        # recorded and fed to the touch-gesture pipeline: a per-sensor ``mag``
-        # vector (1 for held sensors, 0 otherwise) alongside the active set.
+        # recorded and fed to the touch-gesture pipeline: a per-sensor magnitude
+        # vector (high while held, zero after release) alongside the active set.
         held = sorted(self._held_sensors)
         geo = getattr(self._skin, "geometry", None)
         n = max((geo.sensor_count if geo else 0),
@@ -338,7 +369,8 @@ class SkinGridView(QWidget):
         data: dict[str, Any] = {
             "type": "magnet",
             "act": held,
-            "mag": [1.0 if i in self._held_sensors else 0.0 for i in range(n)],
+                "mag": [_SIM_PRESS_MAG_UT if i in self._held_sensors else 0.0
+                    for i in range(n)],
         }
         source = (self._skin.touch or {}).get("node_mac")
         if source:
@@ -424,17 +456,35 @@ class SkinGridView(QWidget):
             self._on_magnet_msg(data)
 
     def _on_magnet_msg(self, data: dict[str, Any]) -> None:
+        magnitudes = data.get("mag")
+        if isinstance(magnitudes, (list, tuple)):
+            self._ensure_sensor_buttons_for_stream(len(magnitudes))
         active = data.get("act") or []
         if not isinstance(active, list):
             return
         changed = False
+        now_ms = time.monotonic() * 1000.0
+        new_active: set[int] = set()
         for raw in active:
             try:
                 idx = int(raw)
             except (TypeError, ValueError):
                 continue
+            new_active.add(idx)
             self._active_sensors[idx] = 255
             changed = True
+            if idx not in self._display_active:
+                previous = self._last_sensor_press_ms.get(idx)
+                if previous is not None:
+                    interval_ms = now_ms - previous
+                    if interval_ms > 0:
+                        self._sensor_frequency_hz[idx] = 1000.0 / interval_ms
+                        btn = self._sensor_buttons.get(idx)
+                        if btn is not None:
+                            btn.setText(
+                                f"T{idx}\n{self._sensor_frequency_hz[idx]:.1f} Hz")
+                self._last_sensor_press_ms[idx] = now_ms
+        self._display_active = new_active
         if changed:
             if not self._tick.isActive():
                 self._tick.start()
@@ -442,12 +492,24 @@ class SkinGridView(QWidget):
 
     def _decay_pulses(self) -> None:
         step = max(1, int(255 * (_TOUCH_TICK_MS / _TOUCH_FADE_MS)))
+        now_ms = time.monotonic() * 1000.0
+        frequency_stale_ms = float(
+            (self._skin.touch or {}).get("frequency_reset_ms",
+             _FREQUENCY_STALE_MS))
+        for idx, last_press_ms in list(self._last_sensor_press_ms.items()):
+            if (now_ms - last_press_ms) >= frequency_stale_ms:
+                if idx in self._sensor_frequency_hz:
+                    self._sensor_frequency_hz.pop(idx, None)
+                    btn = self._sensor_buttons.get(idx)
+                    if btn is not None:
+                        btn.setText(f"T{idx}\n-- Hz")
         # Held sensors stay at full brightness; only released sensors decay.
         for idx in self._held_sensors:
             self._active_sensors[idx] = 255
         self._fade_map(self._active_sensors, step, skip=self._held_sensors)
         self._fade_map(self._active_chambers, step)
-        if not self._active_sensors and not self._active_chambers:
+        if (not self._active_sensors and not self._active_chambers
+            and not self._sensor_frequency_hz):
             self._tick.stop()
         self.update()
 
@@ -563,7 +625,9 @@ class SkinGridView(QWidget):
         dims. This keeps the touch node the on/off switch while ``skin_type``
         decides only WHERE the sensors sit."""
         touch = skin.touch or {}
-        if not touch.get("node_mac"):
+        touch_ctrl = getattr(skin, "touch_controller", None)
+        has_touch_stream = callable(getattr(touch_ctrl, "on_magnet", None))
+        if not touch.get("node_mac") and not has_touch_stream:
             return (fallback_cols, fallback_rows,
                     _normalise_grid([], fallback_rows, fallback_cols))
         geo = getattr(skin, "geometry", None)
@@ -579,6 +643,15 @@ class SkinGridView(QWidget):
         if raw:
             rows = max(rows, len(raw))
             cols = max(cols, max((len(row) for row in raw), default=0))
+        elif touch.get("sensor_count"):
+            count = max(1, int(touch["sensor_count"]))
+            cols = 2 if count == 4 else count
+            rows = (count + cols - 1) // cols
+            raw = [
+                [row * cols + col if row * cols + col < count else -1
+                 for col in range(cols)]
+                for row in range(rows)
+            ]
         return cols, rows, _normalise_grid(raw, rows, cols)
 
 

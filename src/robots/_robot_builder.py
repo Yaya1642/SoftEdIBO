@@ -207,12 +207,26 @@ def _touch_with_saved_threshold(touch_cfg: dict[str, Any] | None,
     compensator rederives ``act`` at the same value. An explicit per-skin
     ``act_threshold_ut`` in the config always wins; without a saved value the
     config passes through untouched."""
-    if not touch_cfg or not skin_type or touch_cfg.get("act_threshold_ut"):
+    if not touch_cfg:
         return touch_cfg
     from src.config.settings import Settings
-    saved = Settings().touch_threshold_ut(skin_type)
-    if saved is None:
-        return touch_cfg
     out = dict(touch_cfg)
-    out["act_threshold_ut"] = saved
+    settings = Settings()
+    key = str(touch_cfg.get("node_mac") or skin_type or "")
+    quadrant_thresholds = settings.touch_quadrant_thresholds(key)
+    if quadrant_thresholds:
+        out["quadrant_thresholds"] = quadrant_thresholds
+    spike_threshold = settings.touch_spike_threshold(key)
+    if spike_threshold is not None:
+        out["rhythm_spike_ut"] = spike_threshold
+    frequency_reset_ms = settings.touch_frequency_reset_ms(key)
+    if frequency_reset_ms is not None:
+        out["frequency_reset_ms"] = frequency_reset_ms
+    sync_tolerance_ms = settings.touch_sync_tolerance_ms(key)
+    if sync_tolerance_ms is not None:
+        out["rhythm_sync_tolerance_ms"] = sync_tolerance_ms
+    if not out.get("act_threshold_ut") and skin_type:
+        saved = settings.touch_threshold_ut(skin_type)
+        if saved is not None:
+            out["act_threshold_ut"] = saved
     return out
